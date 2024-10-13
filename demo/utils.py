@@ -103,7 +103,12 @@ def prepare_responses(data):
     responses = [np.vstack([data['data'][sub]['correctness'] for sub in mmlu_subscenarios]).T for scenario in ['mmlu']]
     return np.hstack(responses)
 
-def preprocess_model_correctness(mmlu_correctness_raw = None):
+def prepare_responses_lb(data):
+    """ Stack all responses of different subscenarios """
+    responses = [np.vstack([data['data'][sub]['correctness'] for sub in mmlu_subscenarios]).T for scenario in ['mmlu']]
+    return np.hstack(responses)
+
+def preprocess_model_correctness(mmlu_correctness_raw = None, save_path = 'mmlu_processed.pickle'):
     if mmlu_correctness_raw is None:
         with open('mmlu.pickle', 'rb') as handle:
             mmlu_correctness_raw = pkl.load(handle)
@@ -132,10 +137,14 @@ def preprocess_model_correctness(mmlu_correctness_raw = None):
         data['data'][sub]['correctness'] = np.array(data['data'][sub]['correctness']).T.astype(float)
         
 
-    with open('mmlu_processed.pickle', 'wb') as handle:
+    with open(save_path, 'wb') as handle:
         pkl.dump(data, handle, protocol=pkl.HIGHEST_PROTOCOL)
     
     return data
+
+def save_model_correctness(path, data):
+    with open(path, 'wb') as handle:
+        pkl.dump(data, handle, protocol=pkl.HIGHEST_PROTOCOL)
 
 
 def download_model_correctness(models):
@@ -146,10 +155,28 @@ def download_model_correctness(models):
             data[model][s] = {}
             data[model][s]['correctness'] = None
             data[model][s]['dates'] = None
-            
+
+    import os, pandas as pd
+
+    if not os.path.exists('cache'):
+        os.makedirs('cache')
+    
+    # check which models have already been downloaded
+    cached_models = [f.split('.pickle')[0] for f in os.listdir('cache') if f.endswith('.pickle')]
+
+    # change '###' to '/' in cached models
+    cached_models = [m.replace('###', '/') for m in cached_models]
+
     skipped = 0
     log = []
     for model in tqdm(models):
+
+        if model.replace('/', '###') in cached_models:
+                path = 'cache/' + model.replace('/', '###') + '.pickle'
+                with open(path, 'rb') as handle:
+                    data[model] = pkl.load(handle)
+                continue
+
         skipped_aux=0
         for s in mmlu_subscenarios:
             if 'arc' in s: metric = 'acc_norm'
@@ -159,8 +186,14 @@ def download_model_correctness(models):
     
             try:
                 aux = load_dataset(model, s)
+
+                df = pd.DataFrame(aux['latest']['metrics'])
+
+                #print(df)
+
                 data[model][s]['dates'] = list(aux.keys())
-                data[model][s]['correctness'] = [a[metric] for a in aux['latest']['metrics']]
+                data[model][s]['correctness'] = df[metric].to_list()
+
                 #print("\nOK {:} {:}\n".format(model,s))
                 log.append("\nOK {:} {:}\n".format(model,s))
             except Exception as e:
@@ -179,6 +212,10 @@ def download_model_correctness(models):
                     skipped_aux+=1
                     log.append("\nSKIP {:} {:}\n".format(model,s))
 
+        # save model data and use model name as path, after changing '###' to '_'
+        path = 'cache/' + model.replace('/', '###') + '.pickle'
+        save_model_correctness(path, data[model])
+
         if skipped_aux>0: skipped+=1
             
         with open('mmlu.pickle', 'wb') as handle:
@@ -189,6 +226,92 @@ def download_model_correctness(models):
     
     return data
 
+def download_scenarios_correctness(models):
+
+    scenarios = ["harness_hellaswag_10", "harness_truthfulqa_mc_0", "harness_arc_challenge_25", "harness_gsm8k_5"]
+    
+    data = {}
+    for model in tqdm(models):
+        data[model] = {}
+        for s in scenarios:
+            data[model][s] = {}
+            data[model][s]['correctness'] = None
+            data[model][s]['dates'] = None
+
+    import os, pandas as pd
+
+    if not os.path.exists('cache_scenarios'):
+        os.makedirs('cache_scenarios')
+    
+    # check which models have already been downloaded
+    cached_models = [f.split('.pickle')[0] for f in os.listdir('cache_scenarios') if f.endswith('.pickle')]
+
+    # change '###' to '/' in cached models
+    cached_models = [m.replace('###', '/') for m in cached_models]
+
+    print("Cached models: ", cached_models)
+
+    skipped = 0
+    log = []
+    for model in tqdm(models):
+
+        print("Model: ", model)
+
+        if model in cached_models:
+            print("Model already cached")
+            path = 'cache_scenarios/' + model.replace('/', '###') + '.pickle'
+            with open(path, 'rb') as handle:
+                data[model] = pkl.load(handle)
+            continue
+
+        skipped_aux=0
+        for s in scenarios:
+            if 'arc' in s: metric = 'acc_norm'
+            elif 'hellaswag' in s: metric = 'acc_norm'
+            elif 'truthfulqa' in s: metric = 'mc2'
+            else: metric = 'acc'
+    
+            try:
+                aux = load_dataset(model, s)
+
+                df = pd.DataFrame(aux['latest']['metrics'])
+
+                #print(df)
+
+                data[model][s]['dates'] = list(aux.keys())
+                data[model][s]['correctness'] = df[metric].to_list()
+
+                #print("\nOK {:} {:}\n".format(model,s))
+                log.append("\nOK {:} {:}\n".format(model,s))
+            except Exception as e:
+                print("\n")
+                print(f"An error occurred: {e}")
+                print("Trying to get the data using a different strategy...")
+                try:
+                    aux = load_dataset(model, s)
+                    data[model][s]['dates'] = list(aux.keys())
+                    data[model][s]['correctness'] = aux['latest'][metric]
+                    #print("\nOK {:} {:}\n".format(model,s))
+                    log.append("\nOK {:} {:}\n".format(model,s))
+                except Exception as e:
+                    print(f"An error occurred: {e}")
+                    data[model][s] = None
+                    skipped_aux+=1
+                    log.append("\nSKIP {:} {:}\n".format(model,s))
+
+        # save model data and use model name as path, after changing '###' to '_'
+        path = 'cache_scenarios/' + model.replace('/', '###') + '.pickle'
+        save_model_correctness(path, data[model])
+
+        if skipped_aux>0: skipped+=1
+            
+        with open('mmlu.pickle', 'wb') as handle:
+            pkl.dump(data, handle, protocol=pkl.HIGHEST_PROTOCOL)
+        
+    print("\nModels skipped in total: {:}\n".format(skipped))
+    print("\n Correctness scores saved to mmlu.pickle")
+    
+    return data
 
 mmlu_subscenarios = ['harness_hendrycksTest_abstract_algebra_5', 'harness_hendrycksTest_anatomy_5', 
                      'harness_hendrycksTest_astronomy_5', 'harness_hendrycksTest_business_ethics_5', 
